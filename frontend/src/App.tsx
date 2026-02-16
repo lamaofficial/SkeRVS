@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import ContextPanel from './components/ContextPanel';
 import Legend from './components/Legend';
 import Graph from './components/Graph';
+import Toolbar from './components/Toolbar';
 import { type GraphData, type Node } from './types';
 import './styles.css';
 
@@ -18,12 +19,13 @@ function App() {
     const [contextContent, setContextContent] = useState<React.ReactNode>(null);
     const [contextTitle, setContextTitle] = useState('');
     const [stats, setStats] = useState<any>(null);
-    const [dimensions, setDimensions] = useState({ width: window.innerWidth - 300, height: window.innerHeight });
+    const [activeTool, setActiveTool] = useState('select');
+    const [dimensions, setDimensions] = useState({ width: window.innerWidth - 300 - 50, height: window.innerHeight }); // Adjust for sidebar + toolbar
 
     // Handle Resize
     useEffect(() => {
         const handleResize = () => {
-            setDimensions({ width: window.innerWidth - 300, height: window.innerHeight });
+            setDimensions({ width: window.innerWidth - 300 - 50, height: window.innerHeight });
         };
         window.addEventListener('resize', handleResize);
         return () => window.removeEventListener('resize', handleResize);
@@ -126,18 +128,21 @@ function App() {
         setFilteredData(filterData(graphData, val));
     };
 
-    const handleNodeClick = useCallback((node: Node) => {
+    // Combined Click & Context Handler
+    const handleNodeClick = useCallback(async (node: Node) => {
         setSelectedNode(node);
-    }, []);
-
-    const handleNodeDoubleClick = useCallback(async (node: Node) => {
+        
+        // Open Context Panel
         setContextOpen(true);
         setContextTitle(`节点详情: ${node.id}`);
         setContextContent(<div style={{textAlign:'center', padding: '20px'}}>加载中...</div>);
 
         try {
             const filename = graphData?.meta?.file || (graphData as any)?.file; // fallback
-            if (!filename) return;
+            if (!filename) {
+                setContextContent(<div>No filename associated with data.</div>);
+                return;
+            }
             
             const res = await fetch('/context', {
                 method: 'POST',
@@ -172,9 +177,38 @@ function App() {
                 </div>
             );
         } catch (e) {
+            console.error(e);
             setContextContent(<div style={{padding:'20px', color:'red'}}>Error loading context</div>);
         }
     }, [graphData]);
+
+    const handleNodeDoubleClick = useCallback((node: Node) => {
+        // Now mostly redundant or can be used for something else. 
+        // User asked to merge functionality into single click.
+    }, []);
+
+    const handleDeleteNode = useCallback(() => {
+        if (!selectedNode || !graphData) return;
+        
+        // Remove from main graphData
+        const newNodes = graphData.nodes.filter(n => n.id !== selectedNode.id);
+        const newLinks = graphData.links.filter(l => {
+            const s = (typeof l.source === 'object') ? (l.source as any).id : l.source;
+            const t = (typeof l.target === 'object') ? (l.target as any).id : l.target;
+            return s !== selectedNode.id && t !== selectedNode.id;
+        });
+        
+        const newGraphData = {
+            ...graphData,
+            nodes: newNodes,
+            links: newLinks
+        };
+
+        setGraphData(newGraphData);
+        setFilteredData(filterData(newGraphData, nodeCount));
+        setSelectedNode(null);
+        setContextOpen(false);
+    }, [selectedNode, graphData, nodeCount, filterData]);
 
     const handleBackgroundClick = useCallback(() => {
         setSelectedNode(null);
@@ -199,10 +233,17 @@ function App() {
     };
 
     const handleExport = (type: string) => {
-         if (!filteredData && type !== 'excel') return;
-         // Reuse existing logic or implement simpler JSON export
+         // Export should use the current state (potentially with deleted nodes)
+         // If user wants to export the *current view*, use filteredData.
+         // If user wants to export the *whole dataset* (minus deletions), use graphData.
+         // Usually export implies "what I see + hidden data", so graphData is better, 
+         // but consistent with current deletions.
+         const dataToExport = graphData || filteredData;
+         
+         if (!dataToExport && type !== 'excel') return;
+         
          if (type === 'json') {
-             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(filteredData, null, 2));
+             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(dataToExport, null, 2));
              const downloadAnchorNode = document.createElement('a');
              downloadAnchorNode.setAttribute("href", dataStr);
              downloadAnchorNode.setAttribute("download", `analysis_result_${Date.now()}.json`);
@@ -210,12 +251,14 @@ function App() {
              downloadAnchorNode.click();
              downloadAnchorNode.remove();
          } else {
-             alert("Only JSON export is implemented in this version due to time constraints.");
+             alert("Only JSON export is implemented for now.");
          }
     };
 
     return (
-        <div className="container">
+        <div className="container" style={{ display: 'flex', flexDirection: 'row', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+            <Toolbar activeTool={activeTool} onToolChange={setActiveTool} />
+            
             <Sidebar 
                 onUpload={handleUpload}
                 onImport={handleImport}
@@ -228,7 +271,42 @@ function App() {
                 hasData={!!graphData}
                 stats={stats}
             />
-            <div className="main">
+            
+            <div className="main" style={{ flex: 1, position: 'relative' }}>
+                 {/* Delete Button Overlay */}
+                 {selectedNode && (
+                     <div style={{
+                         position: 'absolute',
+                         top: '20px',
+                         left: '50%',
+                         transform: 'translateX(-50%)',
+                         zIndex: 1000,
+                         background: 'white',
+                         padding: '10px 20px',
+                         borderRadius: '8px',
+                         boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
+                         display: 'flex',
+                         gap: '10px',
+                         alignItems: 'center'
+                     }}>
+                         <span>选中节点: <strong>{selectedNode.id}</strong></span>
+                         <button 
+                            onClick={handleDeleteNode}
+                            style={{
+                                background: '#e74c3c',
+                                color: 'white',
+                                border: 'none',
+                                padding: '5px 12px',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontWeight: 'bold'
+                            }}
+                         >
+                             删除节点
+                         </button>
+                     </div>
+                 )}
+
                  {filteredData && (
                      <>
                         <Graph 
@@ -236,7 +314,7 @@ function App() {
                             width={dimensions.width}
                             height={dimensions.height}
                             onNodeClick={handleNodeClick}
-                            onNodeDoubleClick={handleNodeDoubleClick}
+                            onNodeDoubleClick={handleNodeDoubleClick} // Keeping pass but handler is empty
                             onBackgroundClick={handleBackgroundClick}
                             colorScale={colorScale}
                             selectedNode={selectedNode}

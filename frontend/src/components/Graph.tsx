@@ -83,15 +83,18 @@ const Graph: React.FC<GraphProps> = ({
                     if (!event.active) simulation.alphaTarget(0.3).restart();
                     d.fx = d.x;
                     d.fy = d.y;
+                    d3.select(event.sourceEvent.target).style("cursor", "grabbing");
                 })
                 .on("drag", (event, d) => {
                     d.fx = event.x;
                     d.fy = event.y;
+                    d3.select(event.sourceEvent.target).style("cursor", "grabbing");
                 })
                 .on("end", (event, d) => {
                     if (!event.active) simulation.alphaTarget(0);
                     d.fx = null;
                     d.fy = null;
+                    d3.select(event.sourceEvent.target).style("cursor", "grab");
                 })
             );
 
@@ -100,16 +103,14 @@ const Graph: React.FC<GraphProps> = ({
             onNodeClick(d);
         });
         
-        node.on("dblclick", (event, d) => {
-             event.stopPropagation();
-             onNodeDoubleClick(d);
-        });
+        // Removed double click handler as per requirements
 
         node.append("circle")
             .attr("r", (d: any) => Math.sqrt(d.weight) * 50 + 5)
             .attr("fill", (d) => colorScale(String(d.group)))
             .attr("stroke", "#fff")
-            .attr("stroke-width", 1.5);
+            .attr("stroke-width", 1.5)
+            .style("cursor", "grab"); // Default cursor for nodes
 
         node.append("text")
             .text((d) => d.id)
