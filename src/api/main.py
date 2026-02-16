@@ -19,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from src.utils.cleaner import read_large_file, clean_paragraph, split_sentences
 from src.core.processor import TextProcessor
 from src.core.merger import SynonymMerger
+from src.core.copilot_namer import GroupNamer
 
 app = FastAPI(title="Smart Keyword Extraction System")
 
@@ -70,8 +71,8 @@ class TaskManager:
 task_manager = TaskManager()
 
 # Background Analysis Logic
-def run_analysis_background(task_id: str, filename: str):
-    logging.info(f"Starting background task {task_id} for {filename}")
+def run_analysis_background(task_id: str, filename: str, use_ai_naming: bool = False):
+    logging.info(f"Starting background task {task_id} for {filename} (AI Naming: {use_ai_naming})")
     try:
         task_manager.update_task(task_id, "processing", 10, "Reading file...")
         file_path = os.path.join(UPLOAD_DIR, filename)
@@ -117,8 +118,44 @@ def run_analysis_background(task_id: str, filename: str):
         edges = processor.build_cooccurrence_matrix(sentences, merge_map=merge_map)
         
         # 4. Community Detection
-        task_manager.update_task(task_id, "processing", 95, "Detecting communities...")
+        task_manager.update_task(task_id, "processing", 90, "Detecting communities...")
         partition = processor.detect_communities(edges)
+        
+        # 5. Group Naming with AI
+        group_names = {}
+        if use_ai_naming:
+            task_manager.update_task(task_id, "processing", 95, "Naming groups with AI...")
+            
+            # Group words by community ID
+            # {group_id: [word1, word2, ...]} - Sort words by weight within group for better context
+            grouped_keywords = {}
+            weights = processor.keyword_weights
+            
+            # Ensure partition uses integer values for group IDs
+            # Some python libs might produce numpy ints which are not JSON serializable directly
+            # but usually fine if converted.
+            
+            for word, group_id in partition.items():
+                gid = int(group_id) # Ensure int
+                if gid not in grouped_keywords:
+                    grouped_keywords[gid] = []
+                grouped_keywords[gid].append((word, weights.get(word, 0)))
+                
+            # Sort and flatten
+            final_groups_dict = {}
+            for gid, kw_list in grouped_keywords.items():
+                # Sort by weight desc
+                sorted_kws = sorted(kw_list, key=lambda x: x[1], reverse=True)
+                final_groups_dict[gid] = [x[0] for x in sorted_kws]
+
+            namer = GroupNamer()
+            group_names = namer.name_all_groups(final_groups_dict)
+            logging.info(f"Generated group names: {list(group_names.items())[:5]}...") # Log sample
+        else:
+            task_manager.update_task(task_id, "processing", 95, "Skipping AI Naming...")
+            # Fallback: Just return empty or numeric names if needed by frontend
+            # The frontend logic seems to handle missing group_names map by using ID
+            pass
         
         duration = time.time() - start_time
         
@@ -130,11 +167,14 @@ def run_analysis_background(task_id: str, filename: str):
                 "stats": {
                     "chars": len(full_text),
                     "nodes": len(processor.keywords),
-                    "links": len(edges)
+                    "links": len(edges),
+                    "groups": len(group_names)
                 }
             },
-            "nodes": [{"id": k['word'], "weight": k['weight'], "group": partition.get(k['word'], 0)} for k in processor.get_keywords_with_weights()],
-            "links": edges
+            "nodes": [{"id": k['word'], "weight": k['weight'], "group": int(partition.get(k['word'], 0)), "groupName": group_names.get(int(partition.get(k['word'], 0)), group_names.get(str(partition.get(k['word'], 0)), f"Group {partition.get(k['word'], 0)}"))} for k in processor.get_keywords_with_weights()],
+            "links": edges,
+            "groups": [{"id": gid, "name": name, "keywords": final_groups_dict.get(gid, []) if 'final_groups_dict' in locals() else []} for gid, name in group_names.items()],
+            "group_names": {str(k): v for k, v in group_names.items()} # Convert keys to string explicitly to ensure JS compatibility
         }
         
         task_manager.update_task(task_id, "completed", 100, "Analysis complete!", result=result)
@@ -208,7 +248,7 @@ async def get_context(request: ContextRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/analyze")
-async def start_analysis(filename: str):
+async def start_analysis(filename: str, use_ai_naming: bool = False):
     file_path = os.path.join(UPLOAD_DIR, filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -221,7 +261,7 @@ async def start_analysis(filename: str):
         task_manager.executor = ThreadPoolExecutor(max_workers=3)
         
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(task_manager.executor, run_analysis_background, task_id, filename)
+    loop.run_in_executor(task_manager.executor, run_analysis_background, task_id, filename, use_ai_naming)
     
     return {"task_id": task_id, "status": "queued"}
 

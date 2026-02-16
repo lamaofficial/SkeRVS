@@ -149,6 +149,21 @@ function renderGraph(data) {
             .attr("x", 0)
             .attr("dy", "0em")
             .text(`关联节点: ${Math.max(0, neighborIds.size - 1)}`);
+        
+        // Add Group Name
+        let groupName = "Unknown";
+        if (d.groupName) {
+            groupName = d.groupName;
+        } else if (globalGraphData.group_names) {
+            groupName = globalGraphData.group_names[d.group] || `Group ${d.group}`;
+        } else {
+             groupName = `Group ${d.group}`;
+        }
+        
+        infoText.append("tspan")
+            .attr("x", 0)
+            .attr("dy", "1.2em")
+            .text(`分组: ${groupName}`);
 
         infoText.append("tspan")
             .attr("x", 0)
@@ -176,6 +191,59 @@ function renderGraph(data) {
         closeContext();
         resetHighlight();
     });
+
+    // --- Graph Legend ---
+    const legendContainer = document.getElementById("graphLegend");
+    if (legendContainer) {
+        legendContainer.innerHTML = "";
+        const groups = [...new Set(nodes.map(d => d.group))].filter(g => g !== undefined).sort((a,b) => a - b);
+        
+        if (groups.length > 0) {
+            legendContainer.style.display = 'block';
+            
+            const title = document.createElement('div');
+            title.style.fontWeight = 'bold';
+            title.style.marginBottom = '5px';
+            title.style.fontSize = '0.9em';
+            title.innerText = "分组标识";
+            legendContainer.appendChild(title);
+
+            groups.forEach(g => {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                
+                const box = document.createElement('div');
+                box.className = 'legend-color';
+                box.style.backgroundColor = colorScale(g);
+                
+                const label = document.createElement('span');
+                
+                // Debug logging
+                if (g === groups[0]) {
+                    console.log("First group ID:", g, typeof g);
+                    console.log("Available group names:", data.group_names);
+                }
+
+                // Use generated names if available - check both number and string keys
+                let groupName = null;
+                if (data.group_names) {
+                    groupName = data.group_names[g] || data.group_names[String(g)];
+                }
+
+                if (groupName) {
+                    label.innerText = groupName;
+                } else {
+                    label.innerText = `Group ${g}`;
+                }
+                
+                item.appendChild(box);
+                item.appendChild(label);
+                legendContainer.appendChild(item);
+            });
+        } else {
+            legendContainer.style.display = 'none';
+        }
+    }
 }
 
 function exportData() {
@@ -584,11 +652,17 @@ function applyNodeFilter(val) {
     
     // Filter links
     const links = globalGraphData.links.filter(l => 
-        nodeIds.has(l.source) && nodeIds.has(l.target)
+        (nodeIds.has(l.source) || nodeIds.has(l.source.id)) && // Check both string and object (D3 transforms)
+        (nodeIds.has(l.target) || nodeIds.has(l.target.id))
     );
     
     console.log(`Filtering: ${nodes.length} nodes, ${links.length} links`);
-    renderGraph({ nodes, links });
+    // Pass full context including group_names
+    renderGraph({ 
+        ...globalGraphData, 
+        nodes, 
+        links 
+    });
 }
 
 // Context / Side Panel
@@ -810,9 +884,12 @@ async function uploadAndAnalyze() {
         // Store filename for context lookups
         window.currentFile = uploadData.filename;
 
+        // Get AI Naming option
+        const useAiNaming = document.getElementById('useAiNaming').checked;
+
         // 2. Start Async Analysis
         pMsg.innerText = "请求分析任务...";
-        const analyzeRes = await fetch(`/analyze?filename=${uploadData.filename}`, { method: 'POST' });
+        const analyzeRes = await fetch(`/analyze?filename=${uploadData.filename}&use_ai_naming=${useAiNaming}`, { method: 'POST' });
         if (!analyzeRes.ok) throw new Error("Analysis failed to start");
         const taskData = await analyzeRes.json();
         const taskId = taskData.task_id;
